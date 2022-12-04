@@ -1,10 +1,9 @@
 from loguru import logger
 import socket
 import struct
-from xmlrpc.client import dumps, loads
+from xmlrpc.client import dumps, loads, Fault
 
 from .exception import TransportError
-
 
 class DedicatedClient:
 	def __init__(self, host: str, port: int) -> None:
@@ -94,6 +93,32 @@ class DedicatedClient:
 
 	def query(self, method, *args) -> None:
 		handle = self.get_next_handle()
-		self.send_request(handle, dumps(args, methodname=method))
-		data, method_name = loads(self.get_response(handle))
+		self.send_request(handle, dumps(args, methodname=method, allow_none=True))
+		try:
+			(data,), _ = loads(self.get_response(handle))
+		except Fault as xmlrpc_fault:
+			logger.error(xmlrpc_fault)
+			data = None
 		return data
+
+class _XmlRpcMethod:
+	def __init__(self, method_name: str, method_return: str, method_params: 'list[str]', method_help: str) -> None:
+		self.method_name = method_name
+		self.method_return = method_return
+		self.method_params = method_params
+		self.method_help = method_help
+
+class DedicatedCommandClient(DedicatedClient):
+	def __init__(self, host: str='127.0.0.1', port: int=5001) -> None:
+		super().__init__(host, port)
+		self.methods = list()	# type: list[_XmlRpcMethod]
+
+	def populate_methods(self) -> None:
+		methods = self.query('system.listMethods')
+		for method_name in methods:
+			logger.debug('Querying information for method: %s' % (method_name))
+			method_signatures = self.query('system.methodSignature', method_name)
+			method_help = self.query('system.methodHelp', method_name)
+			for signature in method_signatures:
+				if len(signature) > 0:
+					self.methods.append(_XmlRpcMethod(method_name, signature[0], signature[1:], method_help))
